@@ -1,21 +1,10 @@
+/**
+ * 基于以下的假设
+ *  1. 不使用eventHub
+ */
+
 const path = require("path");
 const fs = require("fs");
-
-const targetFile = path.resolve(
-  "/Users/brucezhou/Documents/codes/GitHub/Undergraduate-develop/src/pages/index.wpy"
-);
-const targetFileText = fs.readFileSync(targetFile).toString();
-
-/**
- * 清除js代码注释
- * @param {String} rawCodeString
- * @param {String}
- */
-const removeCodeComments = rawCodeString => {
-  return rawCodeString
-    .replace(/\/\/.*?\n/g, "")
-    .replace(/\/\*(.|\n)*?\*\//g, "");
-};
 
 /**
  * @param {string} rawString
@@ -86,7 +75,7 @@ const matchBracket = (rawString, skip = 0) => {
  * @param {string} rawWepyFileText
  */
 const processWepyFileText = rawWepyFileText => {
-  const configTag = { usingComponets: {}, config: {} };
+  let configTag = {};
   const handledScript = rawWepyFileText.replace(
     /<script>(.|\n)*?<\/script>/g,
     matchedScriptText => {
@@ -101,7 +90,7 @@ const processWepyFileText = rawWepyFileText => {
         /import\s+(\w+)\s+from\s+["']wepy["'];?/g,
         (matched, wepyVariableName) => {
           wepyVariable = wepyVariableName;
-          return `import ${wepyVariableName} from "@wepy/core"`;
+          return `import ${wepyVariableName} from "@wepy/core";`;
         }
       );
 
@@ -119,7 +108,9 @@ const processWepyFileText = rawWepyFileText => {
             return `${wepyVariable}.${p2}`;
           }
         );
+
         const wepyObjectString = innerMatchedScriptText
+          .replace(/\w+\.\$apply\(\);?/g, "") // 替换所有this.$apply();
           .split("")
           .slice(exportOffset)
           .reduce(
@@ -179,13 +170,9 @@ const processWepyFileText = rawWepyFileText => {
         // 处理 config 和 components
         let deepth = 0;
         let tempKeyString = "";
-        const resultObject = {};
+        const wepyObject = {};
 
-        // 处理注释
-        const wepyObjectStringWithoutComment = removeCodeComments(
-          wepyObjectString
-        ).replace(/\r|\n|\s/g, "");
-        wepyObjectStringWithoutComment.split("").forEach((char, charIndex) => {
+        wepyObjectString.split("").forEach((char, charIndex) => {
           if (["{", "["].includes(char)) {
             deepth++;
           }
@@ -198,12 +185,16 @@ const processWepyFileText = rawWepyFileText => {
           if (deepth === 2) {
             if (["{", "["].includes(char)) {
               const { right } = matchBracket(
-                wepyObjectStringWithoutComment.substr(charIndex)
+                wepyObjectString.substr(charIndex)
               );
-              Reflect.defineProperty(resultObject, tempKeyString, {
-                value: wepyObjectStringWithoutComment.substr(charIndex, right),
-                enumerable: true
-              });
+              Reflect.defineProperty(
+                wepyObject,
+                tempKeyString.replace(/[\r\n]/g, "").trim(),
+                {
+                  value: wepyObjectString.substr(charIndex, right),
+                  enumerable: true
+                }
+              );
               tempKeyString = "";
             }
           }
@@ -212,40 +203,103 @@ const processWepyFileText = rawWepyFileText => {
             deepth--;
           }
         });
-        // 处理 config
-        configTag.config = new Function(`return ${resultObject.config}`)();
 
         // 处理 components
         const imports = parseImports(innerMatchedScriptText);
-        const componentsString = String(resultObject.components || "");
-        configTag.usingComponets = componentsString
+        const componentsString = String(wepyObject.components || "");
+        const tempComponents = componentsString
           .substring(1, componentsString.length - 1)
           .split(",")
           .reduce((prev, item) => {
             const [key, value] = item.split(":");
             const importVariableName = value || key;
-            const { path, variable } = imports.find(
+            const importItem = imports.find(
               x => x.variable === importVariableName
-            ) || { path: "", variable: "" };
-            Reflect.defineProperty(prev, variable, {
-              value: path,
-              enumerable: true
-            });
+            );
+            importItem &&
+              Reflect.defineProperty(prev, importItem.variable, {
+                value: importItem.path,
+                enumerable: true
+              });
+
             return prev;
           }, {});
+        Object.keys(tempComponents).length &&
+          (configTag.usingComponents = tempComponents);
+
+        // 处理 config
+        const restConfig = new Function(`return ${wepyObject.config}`)();
+        configTag = { ...configTag, ...restConfig };
+
+        // 去除import中对component的引用
+        const newImportString = Object.keys(
+          configTag.usingComponents || {}
+        ).reduce((prev, current) => {
+          return prev.replace(
+            new RegExp(String.raw`import\s+${current}\s+from(.|\n)+?\n`),
+            ""
+          );
+        }, innerMatchedScriptText.substring(0, exportOffset));
+
+        const wepyPropertys = {
+          toExclude: ["constructor", "config", "components"], // 需要被过滤的属性
+          notPutInMethods: [
+            "globalData",
+            "onLaunch",
+            "mixins",
+            "data",
+            "computed",
+            "watch",
+            "methods",
+            "events",
+            "onLoad",
+            "onShow",
+            "onPullDownRefresh"
+          ] // 不会被放置到methods中
+        };
+        const newWepyObjectString = Object.entries(
+          Object.entries(wepyObject).reduce(
+            (prev, [key, value]) => {
+              const processedKey = key.replace(/\((.|\n)*?\)/g, "");
+              if (wepyPropertys.toExclude.includes(processedKey)) return prev;
+              if (
+                wepyPropertys.notPutInMethods.some(keyWord =>
+                  new RegExp(String.raw`${keyWord}`).test(
+                    processedKey.replace(/async\s*/g, "")
+                  )
+                )
+              ) {
+                prev[key] = value;
+              } else {
+                prev.methods +=
+                  (prev.methods.length ? "," : "") + `${key}:${value}`;
+              }
+              return prev;
+            },
+            { methods: "" }
+          )
+        ).reduce((prev, [key, value]) => {
+          if (key === "methods") {
+            return (prev += `methods:{\n${value}}`);
+          } else {
+            return (prev += key + ":" + value);
+          }
+        }, "");
+
         return (
-          innerMatchedScriptText.slice(0, exportOffset) +
+          newImportString +
           "\n" +
-          `${wepyVariable}.${wepyObjectType}(${wepyObjectString})`
+          `${wepyVariable}.${wepyObjectType}({${newWepyObjectString}})`
         );
       })();
 
-      return `<script>${innerMatchedScriptText}</script>`;
+      return `<script>
+${innerMatchedScriptText}
+</script>`;
     }
   );
   return (
     handledScript +
-    "\n" +
     `
 <config>
   ${JSON.stringify(configTag, null, 2)}
@@ -254,4 +308,4 @@ const processWepyFileText = rawWepyFileText => {
   );
 };
 
-console.log(processWepyFileText(targetFileText));
+module.exports = processWepyFileText;
