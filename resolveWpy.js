@@ -212,7 +212,7 @@ const processWepyFileText = rawWepyFileText => {
           .split(",")
           .reduce((prev, item) => {
             const [key, value] = item.split(":");
-            const importVariableName = value || key;
+            const importVariableName = (value || key || "").trim();
             const importItem = imports.find(
               x => x.variable === importVariableName
             );
@@ -236,7 +236,7 @@ const processWepyFileText = rawWepyFileText => {
           configTag.usingComponents || {}
         ).reduce((prev, current) => {
           return prev.replace(
-            new RegExp(String.raw`import\s+${current}\s+from(.|\n)+?\n`),
+            new RegExp(String.raw`import\s+${current}\s+from(.|\n)*?\n`),
             ""
           );
         }, innerMatchedScriptText.substring(0, exportOffset));
@@ -254,7 +254,8 @@ const processWepyFileText = rawWepyFileText => {
             "events",
             "onLoad",
             "onShow",
-            "onPullDownRefresh"
+            "onPullDownRefresh",
+            "props"
           ] // 不会被放置到methods中
         };
         const newWepyObjectString = Object.entries(
@@ -272,7 +273,10 @@ const processWepyFileText = rawWepyFileText => {
                 prev[key] = value;
               } else {
                 prev.methods +=
-                  (prev.methods.length ? "," : "") + `${key}:${value}`;
+                  (prev.methods.length ? "," : "") +
+                  key +
+                  (/\([\s\w]*\)/.test(key) ? "" : ":") +
+                  value;
               }
               return prev;
             },
@@ -280,9 +284,16 @@ const processWepyFileText = rawWepyFileText => {
           )
         ).reduce((prev, [key, value]) => {
           if (key === "methods") {
-            return (prev += `methods:{\n${value}}`);
+            const hasBracket = /^\{(.|\n)*\}$/.test(value);
+            return (prev += `${prev.length ? ",\n" : ""}methods:\n${
+              hasBracket ? "" : "{"
+            }${value}${hasBracket ? "" : "}"}`);
           } else {
-            return (prev += key + ":" + value);
+            return (prev +=
+              (prev.length ? ",\n" : "") +
+              key +
+              (/\([\s\w]*\)/.test(key) ? "" : ":") +
+              value);
           }
         }, "");
 
