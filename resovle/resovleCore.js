@@ -1,8 +1,3 @@
-/**
- * 基于以下的假设
- *  1. 不使用eventHub
- */
-
 const path = require("path");
 const fs = require("fs");
 
@@ -71,13 +66,13 @@ const matchBracket = (rawString, skip = 0) => {
 };
 
 /**
- * 处理wepy文件
+ * 处理wepy文件的script部分
  * @param {string} rawWepyFileText
  */
-const processWepyFileText = rawWepyFileText => {
+const processWepyScriptText = rawWepyFileText => {
   let configTag = {};
   const handledScript = rawWepyFileText.replace(
-    /<script>(.|\n)*?<\/script>/g,
+    /<script>[\d\D]*?<\/script>/g,
     matchedScriptText => {
       let wepyVariable = "wepy"; // 默认为 "wepy"
       let innerMatchedScriptText = matchedScriptText.slice(
@@ -142,7 +137,10 @@ const processWepyFileText = rawWepyFileText => {
                 } else {
                   prev.result += current;
                 }
-              } else if (bracketCount === 2) {
+              } else if (
+                bracketCount === 2 &&
+                !prev.bracketStack.includes("(")
+              ) {
                 if (current === "}") {
                   prev.result += "},";
                 } else {
@@ -168,60 +166,82 @@ const processWepyFileText = rawWepyFileText => {
             { result: "", bracketStack: [] }
           ).result;
         // 处理 config 和 components
-        let deepth = 0;
         let tempKeyString = "";
         const wepyObject = {};
+        const bracketStack = [];
 
         wepyObjectString.split("").forEach((char, charIndex) => {
-          if (["{", "["].includes(char)) {
-            deepth++;
+          if (["{", "[", "("].includes(char)) {
+            bracketStack.push(char);
           }
 
-          if (deepth === 1) {
-            if (![":", ",", "{", "}"].includes(char)) {
+          const bracketStackString = bracketStack.toString();
+          if (
+            !bracketStackString.startsWith("(,{,{") &&
+            !bracketStackString.startsWith("(,{,[")
+          ) {
+            if ([":", ")", "]"].includes(char)) {
+              if (tempKeyString.length) {
+                const { right } = matchBracket(
+                  wepyObjectString.substr(charIndex)
+                );
+                if (char === ")") {
+                  tempKeyString += ")";
+                } else if (char === "]") {
+                  tempKeyString += "]";
+                }
+
+                const processedTempKeyString = tempKeyString.trim().split("\n");
+
+                Reflect.defineProperty(
+                  wepyObject,
+                  processedTempKeyString[
+                    processedTempKeyString.length - 1
+                  ].trim(),
+                  {
+                    value: wepyObjectString.substr(charIndex + 1, right - 1),
+                    enumerable: true
+                  }
+                );
+              }
+              tempKeyString = "";
+            } else if (
+              tempKeyString.length ||
+              !["(", "{", ",", "}", ")", " ", "\n"].includes(char)
+            ) {
               tempKeyString += char;
             }
           }
-          if (deepth === 2) {
-            if (["{", "["].includes(char)) {
-              const { right } = matchBracket(
-                wepyObjectString.substr(charIndex)
-              );
-              Reflect.defineProperty(
-                wepyObject,
-                tempKeyString.replace(/[\r\n]/g, "").trim(),
-                {
-                  value: wepyObjectString.substr(charIndex, right),
-                  enumerable: true
-                }
-              );
-              tempKeyString = "";
-            }
-          }
 
-          if (["}", "]"].includes(char)) {
-            deepth--;
+          if (["}", "]", ")"].includes(char)) {
+            bracketStack.pop();
           }
         });
 
         // 处理 components
         const imports = parseImports(innerMatchedScriptText);
-        const componentsString = String(wepyObject.components || "");
+        const componentsString = String(
+          wepyObject.components ? wepyObject.components.trim() : ""
+        );
+        const importVariableNames = [];
         const tempComponents = componentsString
           .substring(1, componentsString.length - 1)
+          .replace(/\/\/[\d\D]*?\n/g, "")
+          .replace(/\/\*[\d\D]*?\*\//g, "")
           .split(",")
           .reduce((prev, item) => {
             const [key, value] = item.split(":");
+            const componentsName = (key || "").trim().replace(/["']/g, "");
             const importVariableName = (value || key || "").trim();
             const importItem = imports.find(
               x => x.variable === importVariableName
             );
+            importVariableNames.push(importVariableName);
             importItem &&
-              Reflect.defineProperty(prev, importItem.variable, {
+              Reflect.defineProperty(prev, componentsName, {
                 value: importItem.path,
                 enumerable: true
               });
-
             return prev;
           }, {});
         Object.keys(tempComponents).length &&
@@ -232,9 +252,7 @@ const processWepyFileText = rawWepyFileText => {
         configTag = { ...configTag, ...restConfig };
 
         // 去除import中对component的引用
-        const newImportString = Object.keys(
-          configTag.usingComponents || {}
-        ).reduce((prev, current) => {
+        const newImportString = importVariableNames.reduce((prev, current) => {
           return prev.replace(
             new RegExp(String.raw`import\s+${current}\s+from(.|\n)*?\n`),
             ""
@@ -258,49 +276,68 @@ const processWepyFileText = rawWepyFileText => {
             "props"
           ] // 不会被放置到methods中
         };
-        const newWepyObjectString = Object.entries(
-          Object.entries(wepyObject).reduce(
-            (prev, [key, value]) => {
-              const processedKey = key.replace(/\((.|\n)*?\)/g, "");
-              if (wepyPropertys.toExclude.includes(processedKey)) return prev;
-              if (
-                wepyPropertys.notPutInMethods.some(keyWord =>
-                  new RegExp(String.raw`${keyWord}`).test(
-                    processedKey.replace(/async\s*/g, "")
-                  )
+        const newWepyObject = Object.entries(wepyObject).reduce(
+          (prev, [key, value]) => {
+            const processedKey = key.replace(/\((.|\n)*?\)/g, "");
+            if (wepyPropertys.toExclude.includes(processedKey)) return prev;
+            if (
+              wepyPropertys.notPutInMethods.some(keyWord =>
+                new RegExp(String.raw`${keyWord}`).test(
+                  processedKey.replace(/async\s*/g, "")
                 )
-              ) {
-                prev[key] = value;
-              } else {
-                prev.methods +=
-                  (prev.methods.length ? "," : "") +
-                  key +
-                  (/\([\s\w]*\)/.test(key) ? "" : ":") +
-                  value;
+              )
+            ) {
+              if (key === "methods") {
+                value = value.substring(
+                  value.indexOf("{") + 1,
+                  value.lastIndexOf("}") - 1
+                );
               }
-              return prev;
-            },
-            { methods: "" }
-          )
-        ).reduce((prev, [key, value]) => {
-          if (key === "methods") {
-            const hasBracket = /^\{(.|\n)*\}$/.test(value);
-            return (prev += `${prev.length ? ",\n" : ""}methods:\n${
-              hasBracket ? "" : "{"
-            }${value}${hasBracket ? "" : "}"}`);
-          } else {
-            return (prev +=
-              (prev.length ? ",\n" : "") +
-              key +
-              (/\([\s\w]*\)/.test(key) ? "" : ":") +
-              value);
+              prev[key] = value;
+            } else {
+              prev.toPutInMethods +=
+                (!/,[\n\s\r]*?$/.test(prev.toPutInMethods) &&
+                prev.toPutInMethods.length
+                  ? ",\n"
+                  : "") +
+                key +
+                (/\((.|\n)*\)/.test(key) ? "" : ":") +
+                value;
+            }
+            return prev;
+          },
+          {
+            toPutInMethods: ""
           }
-        }, "");
+        );
+        newWepyObject.methods =
+          "{" +
+          (newWepyObject.methods || "\n") +
+          (newWepyObject.methods && newWepyObject.toPutInMethods ? "," : "") +
+          "\n" +
+          (newWepyObject.toPutInMethods || "\n") +
+          "}";
+        Reflect.deleteProperty(newWepyObject, "toPutInMethods");
+
+        const newWepyObjectString = Object.entries(newWepyObject).reduce(
+          (prev, [key, value]) => {
+            if (!key || !key.length) return prev;
+            value = value.trim();
+            return (prev +=
+              (prev.length && !/,[\n\s\r]*?$/.test(prev.methods) ? ",\n" : "") +
+              key +
+              (/\((.|\n)*?\)/.test(key) ? "" : ":") +
+              "\n" +
+              value +
+              "\n");
+          },
+          ""
+        );
 
         return (
           newImportString +
           "\n" +
-          `${wepyVariable}.${wepyObjectType}({${newWepyObjectString}})`
+          `${wepyVariable}.${wepyObjectType}({\n${newWepyObjectString}})`
         );
       })();
 
@@ -319,4 +356,4 @@ ${innerMatchedScriptText}
   );
 };
 
-module.exports = processWepyFileText;
+module.exports = processWepyScriptText;

@@ -15,9 +15,11 @@ const walkDirectory = (currentRoot, callBack) => {
     } else {
       const extensionName = itemPath.includes(".")
         ? itemPath.substr(itemPath.lastIndexOf(".") + 1)
-        : undefined;
-      callBack(itemPath, extensionName);
-      // process.exit(0);
+        : "";
+      const fileName = itemPath.includes(".")
+        ? itemPath.substr(0, item.lastIndexOf(".") - 1)
+        : itemPath;
+      callBack(itemPath, fileName, extensionName);
     }
   }
 };
