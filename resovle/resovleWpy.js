@@ -2,31 +2,36 @@ const resolveCore = require("./resovleCore");
 const resolvePug = require("./resovlePug");
 const resolveStylus = require("./resovleStylus");
 const resolvePathAlias = require("./resolvePathAlias");
-const resovleTagMethods = require("./resovle/resovleTagMethods");
+const resovleTagMethods = require("./resovleTagMethods");
 const resolveRepairImageTag = require("./resolveRepairImageTag");
+const resolveTemplateRepeat = require("./resolveTemplateRepeat");
 
 const plugins = [
   {
     pattern: /<template\s+lang\s*=\s*["']pug["']/,
-    resolver: resolvePug
+    resolver: resolvePug,
   },
   {
     pattern: /<style\s+lang\s*=\s*["']stylus["']/,
-    resolver: resolveStylus
+    resolver: resolveStylus,
   },
   {
     pattern: /<image/,
-    resolver: resolveRepairImageTag
+    resolver: resolveRepairImageTag,
   },
   {
     // 用于处理usingComponents中的路径别名的问题
     pattern: /["']@\//,
-    resolver: resolvePathAlias
+    resolver: resolvePathAlias,
   },
   {
     pattern: /<template/,
-    resolver: resovleTagMethods
-  }
+    resolver: resovleTagMethods,
+  },
+  {
+    pattern: /<repeat/,
+    resolver: resolveTemplateRepeat,
+  },
 ];
 
 /**

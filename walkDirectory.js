@@ -13,13 +13,11 @@ const walkDirectory = (currentRoot, callBack) => {
     if (fs.lstatSync(itemPath).isDirectory()) {
       walkDirectory(itemPath, callBack);
     } else {
-      const extensionName = itemPath.includes(".")
-        ? itemPath.substr(itemPath.lastIndexOf(".") + 1)
-        : "";
-      const fileName = itemPath.includes(".")
-        ? itemPath.substr(0, item.lastIndexOf(".") - 1)
-        : itemPath;
-      callBack(itemPath, fileName, extensionName);
+      const baseName = path.basename(itemPath);
+      const dotPosition = baseName.lastIndexOf(".");
+      const fileName = baseName.substring(0, dotPosition);
+      const extensionName = baseName.substring(dotPosition + 1);
+      callBack(itemPath, fileName, extensionName, path.dirname(itemPath));
     }
   }
 };
