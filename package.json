@@ -3,7 +3,7 @@
     "fse": "^4.0.1"
   },
   "devDependencies": {
-    "pug": "^2.0.4",
+    "pug": "^3.0.1",
     "stylus-converter": "^0.8.1"
   }
 }
